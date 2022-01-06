@@ -67,13 +67,15 @@ var (
 // behind this split design is to provide read access to RPC handlers and sync
 // servers even while the trie is executing expensive garbage collection.
 type Database struct {
-	diskdb ethdb.KeyValueStore // Persistent storage for matured trie nodes
+	diskdb ethdb.KeyValueStore // Persistent storage for matured trie nodes // 最终将内存中的MPT树转化为键值对存储在磁盘
 
 	cleans  *fastcache.Cache            // GC friendly memory cache of clean node RLPs
 	dirties map[common.Hash]*cachedNode // Data and references relationships of dirty trie nodes
 	oldest  common.Hash                 // Oldest tracked node, flush-list head
 	newest  common.Hash                 // Newest tracked node, flush-list tail
 
+	// preimages提供了从哈希到原字节串的映射，我们前面提到的安全MPT树就需要借助这个字段（安全MPT树的键是原字节串经过哈希得到的结果），
+	// 借助这个字段我们就可以从哈希值恢复原字节串，安全的MPT树具体实现位于文件secure_trie.go中，其主要的实现都是对原生的Trie树进行封装
 	preimages map[common.Hash][]byte // Preimages of nodes from the secure trie
 
 	gctime  time.Duration      // Time spent on garbage collection since last commit
@@ -142,8 +144,8 @@ type cachedNode struct {
 	node node   // Cached collapsed trie node, or raw rlp data
 	size uint16 // Byte size of the useful cached data
 
-	parents  uint32                 // Number of live nodes referencing this one
-	children map[common.Hash]uint16 // External children referenced by this node
+	parents  uint32                 // Number of live nodes referencing this one // 引用当前节点的节点数量
+	children map[common.Hash]uint16 // External children referenced by this node // 当前节点的子节点的引用计数
 
 	flushPrev common.Hash // Previous node in the flush-list
 	flushNext common.Hash // Next node in the flush-list

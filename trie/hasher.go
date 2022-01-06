@@ -65,6 +65,9 @@ func returnHasherToPool(h *hasher) {
 
 // hash collapses a node down into a hash node, also returning a copy of the
 // original node initialized with the computed hash to replace the original one.
+//
+// 根节点调用hash函数的时候， force参数是为true的，其他的子节点调用的时候force参数是为false的。
+// force参数的用途是当||c(J,i)||<32的时候也对c(J,i)进行hash计算，这样保证无论如何也会对根节点进行Hash计算
 func (h *hasher) hash(n node, force bool) (hashed node, cached node) {
 	// Return the cached hash if it's available
 	if hash, _ := n.cache(); hash != nil {

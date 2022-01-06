@@ -315,6 +315,8 @@ func NewTxPool(config TxPoolConfig, chainconfig *params.ChainConfig, chain block
 	if !config.NoLocals && config.Journal != "" {
 		pool.journal = newTxJournal(config.Journal)
 
+		// 在首次加载文件中的交易到交易池后，利用交易池的检查功能，将已完成或者已完成的交易拒绝在交易池外
+		// 在加载完成后，交易池中的交易仅仅是本地账户待处理的交易，因此在加载完成后，立即将交易池中的所有本地交易覆盖journal文件
 		if err := pool.journal.load(pool.AddLocals); err != nil {
 			log.Warn("Failed to load transaction journal", "err", err)
 		}
@@ -671,8 +673,11 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (replaced bool, err e
 		return false, err
 	}
 	// If the transaction pool is full, discard underpriced transactions
+	// 交易池先采用一个 txLookup (内部为map）跟踪所有交易。同时将交易根据本地优先，价格优先原则将交易划分为两部分 queue 和 pending。而这两部交易则按账户分别跟踪。
+	// 在进入交易队列前，将判断所有交易队列 all 是否已经达到上限。如果到底上限，则需要从交易池或者当前交易中移除优先级最低交易
 	if uint64(pool.all.Slots()+numSlots(tx)) > pool.config.GlobalSlots+pool.config.GlobalQueue {
 		// If the new transaction is underpriced, don't accept it
+		// 哪些交易的优先级最低呢？首先，本地交易是受保护的，因此如果交易来自remote 时，将检查该交易的价格是否是整个交易池中属于最低价格的。如果是，则拒绝该交易
 		if !isLocal && pool.priced.Underpriced(tx) {
 			log.Trace("Discarding underpriced transaction", "hash", hash, "gasTipCap", tx.GasTipCap(), "gasFeeCap", tx.GasFeeCap())
 			underpricedTxMeter.Mark(1)
@@ -709,6 +714,10 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (replaced bool, err e
 	}
 	// Try to replace an existing transaction in the pending pool
 	from, _ := types.Sender(pool.signer, tx) // already validated
+
+	// 解决交易容量问题后，这笔交易过关斩将，立马将驶入交易内存池中。
+	// 交易是有根据 from 分组管理，且一个 from 由分非可执行交易队列（queue）和可执行交易队列（pending）。
+	// 新交易默认是要在非可执行队列中等待指示，但是一种情况时，如果该 from 的可执行队列中存在一个相同 nonce 的交易时，需要进一步识别是否能替换
 	if list := pool.pending[from]; list != nil && list.Overlaps(tx) {
 		// Nonce already pending, check if required price bump is met
 		inserted, old := list.Add(tx, pool.config.PriceBump)
@@ -717,11 +726,13 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (replaced bool, err e
 			return false, ErrReplaceUnderpriced
 		}
 		// New transaction is better, replace old one
+		// 替换掉旧交易
 		if old != nil {
 			pool.all.Remove(old.Hash())
 			pool.priced.Removed(1)
 			pendingReplaceMeter.Mark(1)
 		}
+		// 将交易同步存储到 all 交易内存池中
 		pool.all.Add(tx, isLocal)
 		pool.priced.Put(tx, isLocal)
 		pool.journalTx(from, tx)
@@ -733,11 +744,13 @@ func (pool *TxPool) add(tx *types.Transaction, local bool) (replaced bool, err e
 		return old != nil, nil
 	}
 	// New transaction isn't replacing a pending one, push into queue
+	// 检查完是否需要替换 pending 交易后，则将交易存入非可执行队列
 	replaced, err = pool.enqueueTx(hash, tx, isLocal, true)
 	if err != nil {
 		return false, err
 	}
 	// Mark local addresses and journal local transactions
+	// 如果交易属于本地交易还需要额外关照。如果交易属于本地交易，但是本地账户集中不存在此 from 时，更新本地账户集
 	if local && !pool.locals.contains(from) {
 		log.Info("Setting new local account", "address", from)
 		pool.locals.add(from)
@@ -761,6 +774,7 @@ func (pool *TxPool) enqueueTx(hash common.Hash, tx *types.Transaction, local boo
 	if pool.queue[from] == nil {
 		pool.queue[from] = newTxList(false)
 	}
+	// 在进入非可执行队列之前，也要检查是否需要替换掉相同 nonce 的交易
 	inserted, old := pool.queue[from].Add(tx, pool.config.PriceBump)
 	if !inserted {
 		// An older transaction was better, discard this
@@ -1320,6 +1334,7 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) []*types.Trans
 			continue // Just in case someone calls with a non existing account
 		}
 		// Drop all transactions that are deemed too old (low nonce)
+		// 在新区块来到后，删除所有低于新nonce的交易
 		forwards := list.Forward(pool.currentState.GetNonce(addr))
 		for _, tx := range forwards {
 			hash := tx.Hash()
@@ -1327,6 +1342,7 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) []*types.Trans
 		}
 		log.Trace("Removed old queued transactions", "count", len(forwards))
 		// Drop all transactions that are too costly (low balance or out of gas)
+		// 根据账户可用余额，来移除交易开销（amount+gasLimit*gasPrice）高于此余额的交易
 		drops, _ := list.Filter(pool.currentState.GetBalance(addr), pool.currentMaxGas)
 		for _, tx := range drops {
 			hash := tx.Hash()
@@ -1336,6 +1352,7 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) []*types.Trans
 		queuedNofundsMeter.Mark(int64(len(drops)))
 
 		// Gather all executable transactions and promote them
+		// 如果queue队列中存在低于 pending 队列的最小nonce的交易，则可直接转移到pending中
 		readies := list.Ready(pool.pendingNonces.get(addr))
 		for _, tx := range readies {
 			hash := tx.Hash()
@@ -1384,6 +1401,11 @@ func (pool *TxPool) truncatePending() {
 		return
 	}
 
+	// 交易池配置有设置总pending量上限(pool.config.GlobalSlots)。如果超过上限，则分两种策略移除超限部分
+	//
+	// 优先从超上限(pool.config.AccountSlots)的账户中移除交易。
+	// 在移除交易时，并非将某个账户的交易全部删除，而是每个账户轮流删除一笔交易，直到低于交易上限。
+	// 同时，还存在一个特殊删除策略，并非直接轮流每个账户，而是通过一个动态阀值控制，阀值控制遍历顺序，存在一定的随机性
 	pendingBeforeCap := pending
 	// Assemble a spam order to penalize large transactors first
 	spammers := prque.New(nil)
@@ -1432,6 +1454,7 @@ func (pool *TxPool) truncatePending() {
 	}
 
 	// If still above threshold, reduce to limit or min allowance
+	// 如果仍然还超限，则继续采用直接遍历方式，删除交易，直到低于限制
 	if pending > pool.config.GlobalSlots && len(offenders) > 0 {
 		for pending > pool.config.GlobalSlots && uint64(pool.pending[offenders[len(offenders)-1]].Len()) > pool.config.AccountSlots {
 			for _, addr := range offenders {
@@ -1460,6 +1483,14 @@ func (pool *TxPool) truncatePending() {
 }
 
 // truncateQueue drops the oldes transactions in the queue if the pool is above the global queue limit.
+// 交易池对于非可执行交易数量也存在上限控制。如果超过上限，同样需要删除超限部分
+// 删除交易的策略完成根据每个账户pending交易的时间处理，依次删除长时间存在于pending的账户交易。
+// 在交易进入pending 时会更新账户级的心跳时间，代表账户最后pending交易活动时间。时间越晚，说明交易越新
+//
+// 为何是删除最新活动账户的Queue交易呢？
+// 这是因为账户是最新活动，意味着该账户有刚交易进入 pending ，此账户的交易是更有机会被执行的。
+// 那么公平起见，哪些迟迟未能进入 pending 的账户的 queue 交易应该继续保留，以便账户交易有机会进入 pending 。
+// 这样对于每个账户来说，长时间等待过程中都是有机会进入 pending 被矿工处理的
 func (pool *TxPool) truncateQueue() {
 	queued := uint64(0)
 	for _, list := range pool.queue {
@@ -1476,16 +1507,19 @@ func (pool *TxPool) truncateQueue() {
 			addresses = append(addresses, addressByHeartbeat{addr, pool.beats[addr]})
 		}
 	}
+	// 当交易池的交易过多时，以太坊首先根据账户活动时间，从早到晚排列
 	sort.Sort(addresses)
 
 	// Drop transactions until the total is below the limit or only locals remain
 	for drop := queued - pool.config.GlobalQueue; drop > 0 && len(addresses) > 0; {
+		// 再按时间从晚到早依次交易
 		addr := addresses[len(addresses)-1]
 		list := pool.queue[addr.address]
 
 		addresses = addresses[:len(addresses)-1]
 
 		// Drop all transactions if they are less than the overflow
+		// 删除时，如果queue交易笔数不够待删除量时，直接清理该账户所有queue交易。
 		if size := uint64(list.Len()); size <= drop {
 			for _, tx := range list.Flatten() {
 				pool.removeTx(tx.Hash(), true)
@@ -1495,6 +1529,7 @@ func (pool *TxPool) truncateQueue() {
 			continue
 		}
 		// Otherwise drop only last few transactions
+		// 否则逐个删除，直到到达删除任务
 		txs := list.Flatten()
 		for i := len(txs) - 1; i >= 0 && drop > 0; i-- {
 			pool.removeTx(txs[i].Hash(), true)

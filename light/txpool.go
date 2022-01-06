@@ -352,6 +352,7 @@ func (pool *TxPool) validateTx(ctx context.Context, tx *types.Transaction) error
 
 	// Validate the transaction sender and it's sig. Throw
 	// if the from fields is invalid.
+	// 从签名中解析出签名者地址。只有合法的签名才能成功解析出签名者
 	if from, err = types.Sender(pool.signer, tx); err != nil {
 		return core.ErrInvalidSender
 	}
@@ -382,6 +383,10 @@ func (pool *TxPool) validateTx(ctx context.Context, tx *types.Transaction) error
 	}
 
 	// Should supply enough intrinsic gas
+	// 交易在虚拟机中执行时将消耗GAS，为了防止程序错误，允许用户在交易中携带一个GAS上限，防止意外发生。
+	// 同样，为了避免区块总消耗异常，和控制区块数据大小。也同样存在区块GAS上限。而区块中的GAS量是每笔
+	// 交易执行消耗GAS之和，故不可能一笔交易的GAS上限超过区块GAS限制。一旦超过，这笔交易不可能会打包
+	// 到区块中，则可在交易池中直接拒绝超过限制的交易
 	gas, err := core.IntrinsicGas(tx.Data(), tx.AccessList(), tx.To() == nil, true, pool.istanbul)
 	if err != nil {
 		return err

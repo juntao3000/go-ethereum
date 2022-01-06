@@ -28,21 +28,43 @@ import (
 var indices = []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f", "[17]"}
 
 type node interface {
-	fstring(string) string
+	fstring(string) string // 格式化打印
 	cache() (hashNode, bool)
 }
 
+// 以太坊的MPT树中，树节点可以分为四类，分别为空节点，分支节点，叶子节点以及扩展节点。
+// 其中空节点为nil，
+// 分支节点(branch node)被定义为数据结构fullNode，
+// 叶子节点(leaf node)和扩展节点(extension node)都被定义为shortNode，但是根据其中的Val字段的不同，
+// 当Val字段为hashNode时，这个节点为扩展节点，
+// 当Val字段为valueNode时，这个节点为叶子节点
 type (
+	// fullNode对应了黄皮书里面的分支节点
 	fullNode struct {
+		// 包含了17个字段，
+		// 前16个元素对应键中可能存在的一个十六进制字符(半字节 key)
+		// 第17个字段是存储那些在当前结点结束了的节点
 		Children [17]node // Actual trie node data to encode/decode (needs custom encoder)
-		flags    nodeFlag
+
+		flags nodeFlag
 	}
+
+	// shortNode对应了黄皮书里面的扩展节点和叶子节点
+	// 当 shortNode.Key的末尾字节是终止符 16 时表示为叶子节点。
+	// 当 shortNode 是叶子节点是，Val 是 valueNode
 	shortNode struct {
 		Key   []byte
 		Val   node
 		flags nodeFlag
 	}
-	hashNode  []byte
+
+	// 应该取名为 collapsedNode 折叠节点更合适些，
+	// 因为其值是一个哈希值当做指针使用，所以取名 hashNode。
+	// 使用这个哈希值可以从数据库读取节点数据展开节点
+	hashNode []byte
+
+	// 数据节点，实际的业务数据值，
+	// 严格来说他不属于树中的节点，它只存在于 fullNode.Children 或者 shortNode.Val 中
 	valueNode []byte
 )
 

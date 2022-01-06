@@ -61,11 +61,30 @@ func (n *proofList) Delete(key []byte) error {
 // nested states. It's the general query interface to retrieve:
 // * Contracts
 // * Accounts
+// 世界状态并非直接存储在区块链上，而是将这些状态维护在默克尔前缀树中，在区块链上仅记录对应的树 Root 值。
+// 使用简单的数据库来维护树的持久化内容，而这个用来维护映射的数据库叫做 StateDB
+// 以太坊中有两种级别的状态，一个是顶级的世界状态，另一个是账户级的账户状态
+// 账户状态中存储账户信息：
+// nonce: 这个值等于由此账户发出的交易数量，或者由这个账户所创建的合约数量(当这个账户有关联代码时)。
+// balance: 表示这个账户账户余额。
+// storageRoot: 表示保存了账户存储内容的 MPT 树的根节点的哈希值。
+// codeHash: 表示账户的 EVM 代码哈希值，当这个地址接收到一个消息调用时，这些代码会被执行;
+// 		它和其它字段不同，创建后不可更改。如果 codeHash 为空，则说明该账户是一个简单的外部账户，只存在 nonce 和 balance
+// 通过账户地址便可以从世界状态树中查找到该账户状态（如账户余额），
+// 如果是合约地址，还可以继续通过 storageRoot 从该账户存储数据树中查找对应的合约信息（如：拍卖合约中的商品信息）
+//
+// StateDB 有多种用途：
+//
+// 维护账户状态到世界状态的映射。
+// 支持修改、回滚、提交状态。
+// 支持持久化状态到数据库中。
+// 是状态进出默克尔树的媒介。
+// 实际上 StateDB 充当状态（数据,Value）、Trie(树)、LevelDB（存储）的协调者
 type StateDB struct {
-	db           Database
+	db           Database // 操作状态的底层数据库，在实例化 StateDB 时指定
 	prefetcher   *triePrefetcher
 	originalRoot common.Hash // The pre-state root, before any changes were made
-	trie         Trie
+	trie         Trie        // 世界状态所在的树实例对象，现在只有以太坊改进的默克人前缀压缩树
 	hasher       crypto.KeccakState
 
 	snaps         *snapshot.Tree
@@ -75,9 +94,9 @@ type StateDB struct {
 	snapStorage   map[common.Hash]map[common.Hash][]byte
 
 	// This map holds 'live' objects, which will get modified while processing a state transition.
-	stateObjects        map[common.Address]*stateObject
-	stateObjectsPending map[common.Address]struct{} // State objects finalized but not yet written to the trie
-	stateObjectsDirty   map[common.Address]struct{} // State objects modified in the current execution
+	stateObjects        map[common.Address]*stateObject // 以账户地址为键的账户状态对象，能够在内存中维护使用过的账户
+	stateObjectsPending map[common.Address]struct{}     // State objects finalized but not yet written to the trie
+	stateObjectsDirty   map[common.Address]struct{}     // State objects modified in the current execution
 
 	// DB error.
 	// State objects are used by the consensus core and VM which are
@@ -101,7 +120,7 @@ type StateDB struct {
 
 	// Journal of state modifications. This is the backbone of
 	// Snapshot and RevertToSnapshot.
-	journal        *journal
+	journal        *journal // 修改状态的日志流水，使用此日志流水可回滚状态
 	validRevisions []revision
 	nextRevisionId int
 
@@ -125,6 +144,13 @@ type StateDB struct {
 }
 
 // New creates a new state from a given trie.
+// 首先，我们要告诉 StateDB ，我们要使用哪个状态。因此需要提供 StateRoot 作为默克尔树根去构建树。
+// StateRoot 值相当于数据版本号，根据版本号可以明确的知道要使用使用哪个版本的状态。
+// 当然，数据内容并没在树中，需要到一个数据库中读取。因此在构建 State DB 时需要提供 stateRoot 和 db 才能完成构建。
+// 任何实现 state.Database 接口的 db 都可以使用，因为需要通过 db 来访问树和合约代码
+//
+// 这个 db  是 *state.cachingDB,用lru.Cache,fastcache.Cache 对 trie.Database 包装了一层
+// trie.Database 关联了 levelDB,freezerDB(裸写文件的 ancient 古老块)
 func New(root common.Hash, db Database, snaps *snapshot.Tree) (*StateDB, error) {
 	tr, err := db.OpenTrie(root)
 	if err != nil {
@@ -538,6 +564,8 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 		if metrics.EnabledExpensive {
 			defer func(start time.Time) { s.AccountReads += time.Since(start) }(time.Now())
 		}
+
+		// 第一次使用，则以账户地址为 key 从树中查找读取账户状态数据
 		enc, err := s.trie.TryGet(addr.Bytes())
 		if err != nil {
 			s.setError(fmt.Errorf("getDeleteStateObject (%x) error: %v", addr.Bytes(), err))

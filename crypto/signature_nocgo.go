@@ -59,19 +59,20 @@ func SigToPub(hash, sig []byte) (*ecdsa.PublicKey, error) {
 //
 // The produced signature is in the [R || S || V] format where V is 0 or 1.
 func Sign(hash []byte, prv *ecdsa.PrivateKey) ([]byte, error) {
-	if len(hash) != 32 {
+	if len(hash) != 32 { // 首先，签名是针对32字节的byte，实际上是对应待签名内容的哈希值，以太坊中哈希值common.Hash长度固定为32
 		return nil, fmt.Errorf("hash is required to be exactly 32 bytes (%d)", len(hash))
 	}
-	if prv.Curve != btcec.S256() {
+	if prv.Curve != btcec.S256() { // 确保私钥的曲线算法是比特币的secp256k1。目的是控制所有签名均通过 secp256k1 算法计算
 		return nil, fmt.Errorf("private key curve is not secp256k1")
 	}
+	// 调用比特币的签名函数，传入 secp256k1 、私钥和签名内容,并说明并非压缩的私钥。此时 SignCompact 函数返还一定格式的签名。其格式为：[27 + recid] [R] [S]
 	sig, err := btcec.SignCompact(btcec.S256(), (*btcec.PrivateKey)(prv), hash, false)
 	if err != nil {
 		return nil, err
 	}
 	// Convert to Ethereum signature format with 'recovery id' v at the end.
-	v := sig[0] - 27
-	copy(sig, sig[1:])
+	v := sig[0] - 27   // 以太坊将比特币中记录的recovery id 提取出。减去27的原因是，比特币中第一个字节的值等于27+recid，因此 recid= sig[0]-27
+	copy(sig, sig[1:]) // 以太坊签名格式是[R] [S] [V]，和比特币不同。因此需要进行调换，将 R 和 S 值放到前面，将 recid 放到最后
 	sig[64] = v
 	return sig, nil
 }
@@ -79,6 +80,8 @@ func Sign(hash []byte, prv *ecdsa.PrivateKey) ([]byte, error) {
 // VerifySignature checks that the given public key created signature over hash.
 // The public key should be in compressed (33 bytes) or uncompressed (65 bytes) format.
 // The signature should have the 64 byte [R || S] format.
+// 关键点在于调用校验签名函数时，第三个参数sig 送入的是 sig[:len(sig)-1] 去掉了末尾的一个字节。
+// 这是因为函数VerifySignature要求 sig参数必须是[R] [S]格式，因此需要去除末尾的[V]
 func VerifySignature(pubkey, hash, signature []byte) bool {
 	if len(signature) != 64 {
 		return false

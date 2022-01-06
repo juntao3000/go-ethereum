@@ -35,6 +35,8 @@ import (
 // the preimage of each key.
 //
 // SecureTrie is not safe for concurrent use.
+//
+// 为了解决路径深度攻击而将数据进入 MPT 前进行一次安全清洗，使用 Keccak256(key) 得到的key 的哈希值替换原数据 key
 type SecureTrie struct {
 	trie             Trie
 	hashKeyBuf       [common.HashLength]byte

@@ -163,6 +163,7 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, genesis *Genesis, override
 		return params.AllEthashProtocolChanges, common.Hash{}, errGenesisNoConfig
 	}
 	// Just commit the new block if there is no stored genesis block.
+	// 从数据库中根据区块高度 0 读取创世区块哈希
 	stored := rawdb.ReadCanonicalHash(db, 0)
 	if (stored == common.Hash{}) {
 		if genesis == nil {
@@ -276,6 +277,7 @@ func (g *Genesis) ToBlock(db ethdb.Database) *types.Block {
 			statedb.SetState(addr, key, value)
 		}
 	}
+	//将账户数据写入 state 后，便可以计算出 state 数据的默克尔树的根值，称之为 StateRoot。 此值记录在区块头 Root 字段中
 	root := statedb.IntermediateRoot(false)
 	head := &types.Header{
 		Number:     new(big.Int).SetUint64(g.Number),
@@ -304,9 +306,11 @@ func (g *Genesis) ToBlock(db ethdb.Database) *types.Block {
 			head.BaseFee = new(big.Int).SetUint64(params.InitialBaseFee)
 		}
 	}
+	// 提交 state，将 state 数据提交到底层的内存 trie 数据中
 	statedb.Commit(false)
+	// 将内存 trie 数据更新到 db 中。 这是多余的一步，因为提交到数据库是由外部进行，这里只需要负责生成区块
 	statedb.Database().TrieDB().Commit(root, true, nil)
-
+	// 利用区块头创建区块，且区块中无交易记录
 	return types.NewBlock(head, nil, nil, nil, trie.NewStackTrie(nil))
 }
 

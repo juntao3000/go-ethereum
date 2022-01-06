@@ -226,6 +226,9 @@ func sanityCheckSignature(v *big.Int, r *big.Int, s *big.Int, maybeProtected boo
 	return nil
 }
 
+// 交易是否受保护取决于是否是 EIP155 签名器签名，
+// 因为在 EIP155 中 v = recid+ chainID*2+ 35，旧算法是 v= recid+27，而 recid 为0或者1，即 v 为 27 或28。
+// 因此只要 v 值不等于 27和28则为受保护的交易
 func isProtectedV(V *big.Int) bool {
 	if V.BitLen() <= 8 {
 		v := V.Uint64()

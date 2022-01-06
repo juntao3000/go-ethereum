@@ -37,6 +37,9 @@ type sigCache struct {
 }
 
 // MakeSigner returns a Signer based on the given chain config and block number.
+// 交易签名时，需要提供一个签名器(Signer)和私钥(PrivateKey)。
+// 需要Singer是因为在EIP155修复简单重复攻击漏洞后，需要保持旧区块链的签名方式不变，但又需要提供新版本的签名方式。
+// 因此通过接口实现新旧签名方式，根据区块高度创建不同的签名器
 func MakeSigner(config *params.ChainConfig, blockNumber *big.Int) Signer {
 	var signer Signer
 	switch {
@@ -507,6 +510,12 @@ func recoverPlain(sighash common.Hash, R, S, Vb *big.Int, homestead bool) (commo
 }
 
 // deriveChainId derives the chain id from the given v parameter
+// 根据 v = recid+ chainID*2+ 35 ，其中recid为0或者1 ，得 chainID= (v-35)/2 或者 (v-36)/2，
+// 不管v是奇数还是偶数，两种计算方式的结果那么是整除,要么留有小数，即要么等于chainID，那么是稍大于chainID。因此可以对结果直接取整，即等于 chainID
+// 即考虑了超过MaxUint64,也考虑了 27或者28的旧签名方式。拿到 chainID 后，则判断tx.ChainID 是否等于当前的网络的ChainID。
+//
+// 最后根据 v = recid+ chainID*2+ 35，还原出 recid = v - chainID * 2 - 35=v - chainID * 2 - 8-27。
+// 这里并没有直接减去 35 的原因是recoverPlain方法中会按照旧方式减去 27 ，因此这里只需要减去 8 ，其他在recoverPlain中处理
 func deriveChainId(v *big.Int) *big.Int {
 	if v.BitLen() <= 64 {
 		v := v.Uint64()

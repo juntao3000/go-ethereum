@@ -38,23 +38,32 @@ const (
 )
 
 // Database wraps access to tries and contract code.
+// 当前有两种类型的 DB 实现了 Database 接口，轻节点使用的 odrDatabase ，和正常节点端使用的带有缓存的 cachingDB 。
+// 因为轻节点并不存储数据，需要通过向其他节点查询来获得数据，
+// 而 odrDatabase 就是这种数据读取方式的封装。一个普通节点已内置 levelDB，为了提高读写性能，使用 cachingDB 对其进行一次封装
 type Database interface {
 	// OpenTrie opens the main account trie.
+	// 打开指定状态版本(root)的含世界状态的顶层树
 	OpenTrie(root common.Hash) (Trie, error)
 
 	// OpenStorageTrie opens the storage trie of an account.
+	// 打开账户(addrHash)下指定状态版本(root)的账户数据存储树
 	OpenStorageTrie(addrHash, root common.Hash) (Trie, error)
 
 	// CopyTrie returns an independent copy of the given trie.
+	// 深度拷贝树
 	CopyTrie(Trie) Trie
 
 	// ContractCode retrieves a particular contract's code.
+	// 获取账户（addrHash）的合约，必须和合约哈希(codeHash)匹配
 	ContractCode(addrHash, codeHash common.Hash) ([]byte, error)
 
 	// ContractCodeSize retrieves a particular contracts code's size.
+	// 获取指定合约大小
 	ContractCodeSize(addrHash, codeHash common.Hash) (int, error)
 
 	// TrieDB retrieves the low level trie database used for data storage.
+	// 获得 Trie 底层的数据驱动 DB，如: levedDB 、内存数据库、远程数据库
 	TrieDB() *trie.Database
 }
 

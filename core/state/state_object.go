@@ -63,11 +63,13 @@ func (s Storage) Copy() Storage {
 // First you need to obtain a state object.
 // Account values can be accessed and modified through the object.
 // Finally, call CommitTrie to write the modified storage trie into a database.
+//
+// stateObject 中维护关于某个账户的所有信息，涉及账户地址、账户地址哈希、账户属性、底层数据库、存储树等内容
 type stateObject struct {
-	address  common.Address
-	addrHash common.Hash // hash of ethereum address of the account
-	data     types.StateAccount
-	db       *StateDB
+	address  common.Address     // 对应的账户地址
+	addrHash common.Hash        // hash of ethereum address of the account // 账户地址的哈希值
+	data     types.StateAccount // 这个是实际的以太坊账号的信息
+	db       *StateDB           //底层数据库
 
 	// DB error.
 	// State objects are used by the consensus core and VM which are
@@ -136,6 +138,7 @@ func (s *stateObject) markSuicided() {
 	s.suicided = true
 }
 
+// 是空账户，则进行 touch。一旦账户被 touched ，则会在 Commit 时删除
 func (s *stateObject) touch() {
 	s.db.journal.append(touchChange{
 		account: &s.address,
@@ -147,6 +150,7 @@ func (s *stateObject) touch() {
 	}
 }
 
+// 懒加载。只有在第一次使用时才加载树。这棵树和顶层的世界状态树结构一样，只是存储的内容不同而已
 func (s *stateObject) getTrie(db Database) Trie {
 	if s.trie == nil {
 		// Try fetching from prefetcher first
@@ -169,6 +173,7 @@ func (s *stateObject) getTrie(db Database) Trie {
 }
 
 // GetState retrieves a value from the account storage trie.
+// Key 并不是一个哈希值，仅仅是 32 字节的 bytes。 不能被参数类型 common.Hash 所迷惑，同样存储的返回值也是一个 32 bytes
 func (s *stateObject) GetState(db Database, key common.Hash) common.Hash {
 	// If the fake storage is set, only lookup the state here(in the debugging mode)
 	if s.fakeStorage != nil {

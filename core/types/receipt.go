@@ -50,26 +50,31 @@ const (
 )
 
 // Receipt represents the results of a transaction.
+// 交易回执是在以太坊虚拟机处理完交易后，根据结果整理出的交易执行结果信息。反映了交易执行前后以太坊变化以及交易执行状态
 type Receipt struct {
 	// Consensus fields: These fields are defined by the Yellow Paper
-	Type              uint8  `json:"type,omitempty"`
-	PostState         []byte `json:"root"`
+	Type      uint8  `json:"type,omitempty"`
+	PostState []byte `json:"root"`
+	//
+	// 执行结果,成功与否，1表示成功，0表示失败。注意在高度1035301前，并非1或0，而是 StateRoot，表示此交易执行完毕后的以太坊状态
 	Status            uint64 `json:"status"`
-	CumulativeGasUsed uint64 `json:"cumulativeGasUsed" gencodec:"required"`
-	Bloom             Bloom  `json:"logsBloom"         gencodec:"required"`
-	Logs              []*Log `json:"logs"              gencodec:"required"`
+	CumulativeGasUsed uint64 `json:"cumulativeGasUsed" gencodec:"required"` // 区块中已执行的交易累计消耗的Gas，包含当前交易
+	Bloom             Bloom  `json:"logsBloom"         gencodec:"required"` // 从 Logs 中提取的事件布隆过滤器，用于快速检测某主题的事件是否存在于Logs中
+	Logs              []*Log `json:"logs"              gencodec:"required"` // 当前交易执行所产生的智能合约事件列表
 
 	// Implementation fields: These fields are added by geth when processing a transaction.
 	// They are stored in the chain database.
-	TxHash          common.Hash    `json:"transactionHash" gencodec:"required"`
-	ContractAddress common.Address `json:"contractAddress"`
-	GasUsed         uint64         `json:"gasUsed" gencodec:"required"`
+	// 交易信息,这些信息不参与共识的原因是这三项信息已经在其他地方校验
+	TxHash          common.Hash    `json:"transactionHash" gencodec:"required"` // 交易回执所对应的交易哈希,区块有校验交易集的正确性
+	ContractAddress common.Address `json:"contractAddress"`                     // 新合约地址,已经提交到以太坊状态 State 中
+	GasUsed         uint64         `json:"gasUsed" gencodec:"required"`         // 交易消耗的Gas,已属于CumulativeGasUsed的一部分
 
 	// Inclusion information: These fields provide information about the inclusion of the
 	// transaction corresponding to this receipt.
-	BlockHash        common.Hash `json:"blockHash,omitempty"`
-	BlockNumber      *big.Int    `json:"blockNumber,omitempty"`
-	TransactionIndex uint        `json:"transactionIndex"`
+	// 区块信息,为了方便外部读取交易回执
+	BlockHash        common.Hash `json:"blockHash,omitempty"`   // 交易所在区块哈希
+	BlockNumber      *big.Int    `json:"blockNumber,omitempty"` // 交易所在区块高度
+	TransactionIndex uint        `json:"transactionIndex"`      // 交易在区块交易集中的索引
 }
 
 type receiptMarshaling struct {
@@ -283,6 +288,9 @@ func (r *Receipt) Size() common.StorageSize {
 
 // ReceiptForStorage is a wrapper around a Receipt that flattens and parses the
 // entire content of a receipt, as opposed to only the consensus fields originally.
+// 交易回执作为交易执行中间产物，为了方便快速获取某笔交易的执行明细。以太坊中有跟随区块存储时实时存储交易回执。但为了降低存储量，只存储了必要内容
+// 首先，在存储时，将交易回执对象转换为精简内容。
+// 精简内容是专门为存储定义的一个结构ReceiptForStorage。存储时将交易回执集进行RLP编码存储。
 type ReceiptForStorage Receipt
 
 // EncodeRLP implements rlp.Encoder, and flattens all content fields of a receipt

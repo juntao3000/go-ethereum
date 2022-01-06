@@ -59,6 +59,8 @@ type LeafCallback func(paths [][]byte, hexpath []byte, leaf []byte, parent commo
 // Use New to create a trie that sits on top of a database.
 //
 // Trie is not safe for concurrent use.
+//
+// trie的结构最终都是需要通过KV的形式存储到数据库里面去，然后启动的时候是需要从数据库里面加载
 type Trie struct {
 	db   *Database
 	root node
@@ -79,6 +81,9 @@ func (t *Trie) newFlag() nodeFlag {
 // trie is initially empty and does not require a database. Otherwise,
 // New will panic if db is nil and returns a MissingNodeError if root does
 // not exist in the database. Accessing the trie loads nodes from db on demand.
+//
+// Trie树的插入，查找和删除 Trie树的初始化调用New函数
+//
 func New(root common.Hash, db *Database) (*Trie, error) {
 	if db == nil {
 		panic("trie.New called without a database")
@@ -87,6 +92,8 @@ func New(root common.Hash, db *Database) (*Trie, error) {
 		db: db,
 	}
 	if root != (common.Hash{}) && root != emptyRoot {
+		// 如果hash值不是空值的化，就说明是从数据库加载一个已经存在的Trie树， 就调用trei.resolveHash方法来加载整颗Trie树
+
 		rootnode, err := trie.resolveHash(root[:], nil)
 		if err != nil {
 			return nil, err
@@ -124,6 +131,15 @@ func (t *Trie) TryGet(key []byte) ([]byte, error) {
 }
 
 func (t *Trie) tryGet(origNode node, key []byte, pos int) (value []byte, newnode node, didResolve bool, err error) {
+	// tryGet()方法的返回参数value表示相应Key所对应的Value值，didResolve表示当遇到hashNode时需
+	// 要从数据库中加载相应的shortNode节点或者fullNode节点，如果加载成功，则该字段为true。在这之后，
+	// 则要修改所有这个hashNode之前节点的指针，即Val字段，因为在没有加载之前hashNode的父节点的Val
+	// 字段是指向一个hashNode节点的，而在加载之后它会被更新为其他节点，因此需要依次地修改这条路上所
+	// 有节点的指针，其中newnode就是为这个步骤准备的。
+	//
+	// tryGet()方法是递归调用的，如果该方法执行成功，则会返回查询结果value。如果在该方法的调用过程中，
+	// 需要从数据库中加载新的节点，那么从根节点到这条节点路径上的所有节点都会被修改，最终Trie对象的root也会被修
+
 	switch n := (origNode).(type) {
 	case nil:
 		return nil, nil, false, nil
@@ -283,26 +299,59 @@ func (t *Trie) TryUpdate(key, value []byte) error {
 	return nil
 }
 
+// Trie树的插入，这是一个递归调用的方法，从根节点开始，一直往下找，直到找到可以插入的点，进行插入操作
+// 参数
+// node是当前插入的节点
+// prefix是当前已经处理完的部分key
+// key是还没有处理完的部分key, 完整的key = prefix + key
+// value是需要插入的值
+//
+// 返回值
+// bool是操作是否改变了Trie树(dirty)
+// node是插入完成后的子树的根节点
+// error是错误信息
 func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error) {
+	//key为空
 	if len(key) == 0 {
+		// 当前节点是一个叶子节点
 		if v, ok := n.(valueNode); ok {
+			// 判断当前节点内容和新插入内容
+			// 也就是更新当前节点的值
 			return !bytes.Equal(v, value.(valueNode)), value, nil
 		}
+
+		// 如果当前节点不是叶子节点,则改变了当前节点
+		// 新插入节点?
 		return true, value, nil
 	}
 	switch n := n.(type) {
-	case *shortNode:
+	case *shortNode: // 如果当前的根节点类型是shortNode(拓展节点或者叶子节点)
+		// 首先计算公共前缀，
 		matchlen := prefixLen(key, n.Key)
+
 		// If the whole key matches, keep this short node as is
 		// and only update the value.
+		// 如果公共前缀就等于当前节点key，说明要插入的key是当前节点或者当前节点的分支
 		if matchlen == len(n.Key) {
+			// 递归调用
 			dirty, nn, err := t.insert(n.Val, append(prefix, key[:matchlen]...), key[matchlen:], value)
 			if !dirty || err != nil {
 				return false, n, err
 			}
+
+			// 更新shortNode的值然后返回。
 			return true, &shortNode{n.Key, nn, t.newFlag()}, nil
 		}
+
 		// Otherwise branch out at the index where they differ.
+		// 如果公共前缀不完全匹配，那么就需要把公共前缀提取出来形成一个独立的节点(扩展节点),
+		// 扩展节点后面连接一个branch节点，branch节点后面看情况连接两个short节点,包含原节点和新节点。
+		// 首先构建一个branch节点(branch := &fullNode{flags: t.newFlag()}),
+		// 然后在branch节点的Children位置调用t.insert插入剩下的两个short节点。
+		//
+		// 这里有个小细节，key的编码是HEX encoding,而且末尾带了一个终结符。
+		// 考虑我们的根节点的key是abc0x16，我们插入的节点的key是ab0x16。
+		// 下面的branch.Children[key[matchlen]]才可以正常运行，0x16刚好指向了branch节点的第17个孩子。
 		branch := &fullNode{flags: t.newFlag()}
 		var err error
 		_, branch.Children[n.Key[matchlen]], err = t.insert(nil, append(prefix, n.Key[:matchlen+1]...), n.Key[matchlen+1:], n.Val)
@@ -313,13 +362,19 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		if err != nil {
 			return false, nil, err
 		}
+
 		// Replace this shortNode with the branch if it occurs at index 0.
+		// 如果匹配的长度是0，那么直接返回这个branch节点，否则返回shortNode节点作为前缀节点
 		if matchlen == 0 {
 			return true, branch, nil
 		}
+
 		// Otherwise, replace it with a short node leading up to the branch.
 		return true, &shortNode{key[:matchlen], branch, t.newFlag()}, nil
 
+	// 如果当前的节点是fullNode(也就是分支节点)，
+	// 在对应的Children插槽找到子节点,继续下探更新
+	// 在分支节点中继续向下查找时，分支节点的子节点插槽也属于路径的一部分，占用一个字节。根据 pos= key[0] 便可在确定的插槽 pos 中继续查找
 	case *fullNode:
 		dirty, nn, err := t.insert(n.Children[key[0]], append(prefix, key[0]), key[1:], value)
 		if !dirty || err != nil {
@@ -330,9 +385,13 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		n.Children[key[0]] = nn
 		return true, n, nil
 
+	// 如果节点类型是nil(一棵全新的Trie树的节点就是nil的),这个时候整颗树是空的，
+	// 直接返回shortNode{key, value, t.newFlag()}，这个时候整颗树的根就含有了一个shortNode节点
 	case nil:
 		return true, &shortNode{key, value, t.newFlag()}, nil
 
+	// 如果当前节点是hashNode, hashNode的意思是当前节点还没有加载到内存里面来，还是存放在数据库里面，
+	// 那么首先调用 t.resolveHash(n, prefix)来加载到内存,原成一颗子树，然后对加载出来的节点调用insert方法来进行插入
 	case hashNode:
 		// We've hit a part of the trie that isn't loaded yet. Load
 		// the node and insert into it. This leaves all child nodes on
@@ -375,6 +434,9 @@ func (t *Trie) TryDelete(key []byte) error {
 // delete returns the new root of the trie with key deleted.
 // It reduces the trie to minimal form by simplifying
 // nodes on the way up after deleting recursively.
+//
+// 分支节点至少要有两个子节点，如果只有一个子节点或者没有则需要调整。
+// shortNode 的 value 是 shortNode 时可合并。
 func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 	switch n := n.(type) {
 	case *shortNode:
@@ -394,6 +456,7 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 			return false, n, err
 		}
 		switch child := child.(type) {
+		// 删除后,子树根是否变成了 shortNode ?
 		case *shortNode:
 			// Deleting from the subtrie reduced it to another
 			// short node. Merge the nodes to avoid creating a
@@ -401,12 +464,16 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 			// always creates a new slice) instead of append to
 			// avoid modifying n.Key since it might be shared with
 			// other nodes.
+
+			// 子树上移,和当前节点合并
 			return true, &shortNode{concat(n.Key, child.Key...), child.Val, t.newFlag()}, nil
 		default:
+			// 更新节点的 Value 为子树根
 			return true, &shortNode{n.Key, child, t.newFlag()}, nil
 		}
 
 	case *fullNode:
+		// 在对应的分支节点的子节点插槽处的子树上删除数据节点
 		dirty, nn, err := t.delete(n.Children[key[0]], append(prefix, key[0]), key[1:])
 		if !dirty || err != nil {
 			return false, n, err
@@ -473,6 +540,8 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 	case nil:
 		return false, nil, nil
 
+	// 如果当前节点是hashNode, hashNode的意思是当前节点还没有加载到内存里面来，还是存放在数据库里面，
+	// 那么首先调用 t.resolveHash(n, prefix)来加载到内存,原成一颗子树
 	case hashNode:
 		// We've hit a part of the trie that isn't loaded yet. Load
 		// the node and delete from it. This leaves all child nodes on

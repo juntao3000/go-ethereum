@@ -624,6 +624,7 @@ func (h *handler) BroadcastTransactions(txs types.Transactions) {
 }
 
 // minedBroadcastLoop sends mined blocks to connected peers.
+// 将区块所有信息写入本地数据库❺，对外发送挖出新块事件❻。在 eth 包中会监听并订阅此事件
 func (h *handler) minedBroadcastLoop() {
 	defer h.wg.Done()
 

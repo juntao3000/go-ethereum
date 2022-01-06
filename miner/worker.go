@@ -462,11 +462,17 @@ func (w *worker) mainLoop() {
 
 	for {
 		select {
+		// 新工作启动信号,一旦收到信号，立即开始挖矿
 		case req := <-w.newWorkCh:
 			w.commitNewWork(req.interrupt, req.noempty, req.timestamp)
 
 		case ev := <-w.chainSideCh:
 			// Short circuit for duplicate side blocks
+			// 最长链链切换信号
+			// 当一个区块落地成功后，有可能是在另一个分支上。当此分支的挖矿难度大于当前分支时，将发生最长链切换。此时 miner 将需要订阅从信号，以便更新叔块信息
+			// 短时间内，分支切换可能是频繁的。挖矿一直再相互竞争。如果接受到的区块，已经在叔块集中则忽略，没有则记录到叔块中。
+			// 因为区块奖励是包含叔块奖励的，因此如果还在挖矿中，而叔块数量不到2个时。
+			// 可以不再处理交易，一旦此区块加入叔块集成功，则直接结束交易处理，立刻将当前已处理的交易组装成区块，生成此区块的 PoW 计算信号
 			if _, exist := w.localUncles[ev.Block.Hash()]; exist {
 				continue
 			}
@@ -510,6 +516,14 @@ func (w *worker) mainLoop() {
 			// Note all transactions received may not be continuous with transactions
 			// already included in the current mining block. These transactions will
 			// be automatically eliminated.
+
+			// 新交易信号
+			// 当接收到新交易信号时，将根据挖矿状态区别对待。当尚未挖矿(!w.isRunning())，
+			// 但可以挖矿w.current != nil时，将会把交易提交到待处理中
+			// 首先，将新交易按发送者分组后，根据交易价格和Nonce值排序。形成一个有序的交易集后，依次提交每笔交易。
+			// 最新完毕后将最新的执行结果进行快照备份。当正处于 PoA挖矿，右允许无间隔出块时，则将放弃当前工作，重新开始挖矿。
+			// 最后，不管何种情况都对新交易数计加。但实际并未使用到数据量，仅仅是充当是否有进行中交易的一个标记。
+			// 总得来说，新交易信息并不会干扰挖矿。而仅仅是继续使用当前的挖矿上下文，提交交易。也不用考虑交易是否已处理， 因为当交易重复时，第二次提交将会失败
 			if !w.isRunning() && w.current != nil {
 				// If block is already full, abort
 				if gp := w.current.gasPool; gp != nil && gp.Gas() < params.TxGas {
@@ -557,6 +571,14 @@ func (w *worker) mainLoop() {
 
 // taskLoop is a standalone goroutine to fetch sealing task from the generator and
 // push them to consensus engine.
+// PoW计算寻找Nonce
+// 之所以称之为挖矿，也是因为寻找Nonce的精髓所在。这是一道数学题，只能暴力破解，不断尝试不同的数字。直到找出一个符合要求的数字，这个数字称之为Nonce。寻找Nonce的过程，称之为挖矿。
+// 寻找Nonce是需要时间的，耗时主要由区块难度决定。在代码设计上，以太坊是在 taskLoop 方法中，一直等待 task
+//
+// 当接收到挖矿任务后，先计算出这个区块所对应的一个哈希摘要，并登记此哈希对应的挖矿任务。
+// 登记的用途是方便查找该区块对应的挖矿任务信息，同时在开始新一轮挖矿时，会取消旧的挖矿工作，并从pendingTasks 中删除标记。以便快速作废挖矿任务。
+// 随后，在共识规则下开始寻找Nonce，一旦找到Nonce，则发送给 resutlCh。
+// 同时，如果想取消挖矿任务，只需要关闭 stopCh。而在每次开始挖矿寻找Nonce前，便会关闭 stopCh 将当前进行中的挖矿任务终止
 func (w *worker) taskLoop() {
 	defer w.wg.Done()
 	var (
@@ -608,6 +630,12 @@ func (w *worker) taskLoop() {
 
 // resultLoop is a standalone goroutine to handle sealing result submitting
 // and flush relative data to the database.
+// 等待挖矿结果 Nonce
+// 上一步已经开始挖矿，寻找Nonce。下一步便是等待挖矿结束，在 resultLoop 中，一直在等待执行结果
+//
+// 一旦找到Nonce，则说明挖出了新区块。
+// 存储与广播挖出的新块
+// 挖矿结果已经是一个包含正确Nonce 的新区块。在正式存储新区块前，需要检查区块是否已经存在，存在则不继续处理
 func (w *worker) resultLoop() {
 	defer w.wg.Done()
 	for {
@@ -628,6 +656,7 @@ func (w *worker) resultLoop() {
 			w.pendingMu.RLock()
 			task, exist := w.pendingTasks[sealhash]
 			w.pendingMu.RUnlock()
+			// 也许挖矿任务已被取消，如果Pending Tasks 中不存在区块对应的挖矿任务信息，则说明任务已被取消，就不需要继续处理。从挖矿任务中，整理交易回执，补充缺失信息，并收集所有区块事件日志信息
 			if !exist {
 				log.Error("Block found but no relative pending task", "number", block.Number(), "sealhash", sealhash, "hash", hash)
 				continue
@@ -738,6 +767,7 @@ func (w *worker) commitUncle(env *environment, uncle *types.Header) error {
 
 // updateSnapshot updates pending snapshot block and state.
 // Note this function assumes the current variable is thread safe.
+// 更新 environment 快照。快照中记录了区块内容和区块StateDB信息。相对于把当前 environment 备份到内存中。这个备份对挖矿没什么用途，只是方便外部查看 PendingBlock
 func (w *worker) updateSnapshot() {
 	w.snapshotMu.Lock()
 	defer w.snapshotMu.Unlock()
@@ -784,6 +814,16 @@ func (w *worker) commitTransaction(tx *types.Transaction, coinbase common.Addres
 	return receipt.Logs, nil
 }
 
+// 提交交易到当前挖矿的上下文环境(environment)中。上下文环境中记录了当前挖矿工作信息，如当前挖矿高度、已提交的交易、当前State等信息
+//
+// geth 程序启动时，timmer 计时器默认是三秒。但这个时间间隔不是一成不变的，会根据挖矿时长来动态调整。
+// 为什么是默认值是三秒呢？也就是说，系统默认有三秒时间来处理交易，一笔转账交易执行时间是毫秒级的。如果三秒后，仍有新交易未处理完毕，则需要重来，将根据新的交易排序，将愿意支付更多手续费的交易优先处理。
+// 在挖矿timer计时器中，不能固定为三秒钟，这样时间可能太短。采用动态估算的方式也许更加有效。 动态估算的计算公式分两部分：先是计算出一个比例ratio=燃料剩余率，再加工计算出一个新的计时器时间。
+//
+// 新时间间隔 = 当前时间间隔 * (1-基准增长率) + 基准增长率 * ( 当前时间间隔/燃料剩余率 )
+//	        = 当前时间间隔 * (1-0.1) + 0.1 * ( 当前时间间隔/燃料剩余率 )
+// https://learnblockchain.cn/books/geth/part2/miner/signal.html
+//
 func (w *worker) commitTransactions(txs *types.TransactionsByPriceAndNonce, coinbase common.Address, interrupt *int32) bool {
 	// Short circuit if current is nil
 	if w.current == nil {
@@ -904,10 +944,18 @@ func (w *worker) commitTransactions(txs *types.TransactionsByPriceAndNonce, coin
 }
 
 // commitNewWork generates several new sealing tasks based on the parent block.
+// 重新开始下一个区块的挖矿的第一个环节“构建新区块”。这个是整个挖矿业务处理的一个核心
 func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
+	// 挖矿是在竞争挖下一个区块，需要把最新高度的区块作为父块来确定新区块的基本信息
+	// 先根据父块时间戳调整新区块的时间戳。如果新区块时间戳还小于父块时间戳，则直接在父块时间戳上加一秒。
+	// 一种情是，新区块链时间戳比当前节点时间还快时，则需要稍做休眠，避免新出块属于未来。这也是区块时间戳可以作为区块链时间服务的一种保证。
+	//
+	// 有了父块，新块的基本信息是确认的。分别是父块哈希、新块高度、燃料上限、挖矿自定义数据、区块时间戳。
+	// 为了接受区块奖励，还需要设置一个不为空的矿工账户 Coinbase 。
+	// 一个区块的挖矿难度是根据父块动态调整的，因此在正式处理交易前，需要根据共识算法设置新区块的挖矿难度
 	tstart := time.Now()
 	parent := w.chain.CurrentBlock()
 
@@ -956,6 +1004,21 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 		}
 	}
 	// Could potentially happen if starting to mine in an odd state.
+	// 准备上下文环境
+	// 为了方便的共享当前新区块的信息，是专门定义了一个 environment ，专用于记录和当前挖矿工作相关内容。为即将开始的挖矿，先创建一份新的上下文环境信息
+	//
+	// 上下文环境信息中，记录着此新区块信息，分别有：
+	//
+	//state： 状态DB，这个状态DB继承自父块。每笔交易的处理，实际上是在改变这个状态DB。
+	//ancestors： 祖先区块集，用于检测叔块是否合法。
+	//family: 近亲区块集，用于检测叔块是否合法。
+	//uncles：已合法加入的叔块集。
+	//tcount： 当请挖矿周期内已提交的交易数。
+	//gasPool： 新区块可用燃料池。
+	//header： 新区块区块头。
+	//txs: 已提交的交易集合。
+	//receipts： 已提交交易产生的交易回执集合。
+	//makeCurrent方法就是在初始化好上述信息
 	err := w.makeCurrent(parent, header)
 	if err != nil {
 		log.Error("Failed to create mining context", "err", err)
@@ -967,6 +1030,14 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 		misc.ApplyDAOHardFork(env.state)
 	}
 	// Accumulate the uncles for the current block
+	// 选择叔块
+	// 唯一需要确认的是叔块必须在另一个分支上。总得来说，叔块是最近7个高度内上的区块，，且和当前新区块不在同一分支上、且不能重复包含在祖先块中
+	//
+	// 前面不断将非分支上的区块存放在叔块集中。在打包新块选择叔块时，将从叔块集中选择适合的叔块
+	// 叔块集分本地矿工打包区块和其他挖矿打包的区块。优先选择自己挖出的区块。
+	// 选择时，将先删除太旧的区块，只从最近的7(staleThreshold)个高度中选择，但最多选择两个叔块放入新区块中。
+	// 为什么不多选几个呢？这个不太清楚如何确定的。共识校验中叔块上限是2。
+	// 怎样的叔块才能够被选择呢？在 commitUncle 时将根据当前新区块的高度、父区块信息来决定是否加入
 	uncles := make([]*types.Header, 0, 2)
 	commitUncles := func(blocks map[common.Hash]*types.Block) {
 		// Clean up stale uncle blocks first
@@ -998,6 +1069,10 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 	}
 
 	// Fill the block with all available pending transactions.
+	// 提交交易
+	// 区块头已准备就绪，此刻开始从交易池拉取待处理的交易。
+	// 将交易根据交易发送者分为两类，本地账户交易 localTxs 和外部账户交易 remoteTxs。
+	// 本地交易优先不仅在交易池交易排队如此，在交易打包到区块中也是如此。本地交易优先，先将本地交易提交，再将外部交易提交
 	pending := w.eth.TxPool().Pending(true)
 	// Short circuit if there is no available pending transactions.
 	// But if we disable empty precommit already, ignore it. Since
@@ -1031,6 +1106,10 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 
 // commit runs any post-transaction state modifications, assembles the final block
 // and commits new work if consensus engine is running.
+// 提交新区块工作，发送 PoW 计算信号。这将触发竞争激烈的 PoW 寻找Nonce过程
+// 提交区块
+// 在交易处理完毕时，会获得交易回执和变更了区块状态。这些信息已经实时记录在上下文环境 environment 中。
+// 将 environment 中的数据整理，便可根据共识规则构建一个区块
 func (w *worker) commit(uncles []*types.Header, interval func(), update bool, start time.Time) error {
 	// Deep copy receipts here to avoid interaction between different tasks.
 	receipts := copyReceipts(w.current.receipts)
@@ -1048,6 +1127,7 @@ func (w *worker) commit(uncles []*types.Header, interval func(), update bool, st
 		if td != nil && ttd != nil && td.Cmp(ttd) >= 0 {
 			return nil
 		}
+		// 有了区块，就剩下最重要也是最核心的一步，执行 PoW 运算寻找 Nonce。这里并不是立刻开始寻找，而是发送一个PoW计算任务信
 		select {
 		case w.taskCh <- &task{receipts: receipts, state: s, block: block, createdAt: time.Now()}:
 			w.unconfirmed.Shift(block.NumberU64() - 1)
