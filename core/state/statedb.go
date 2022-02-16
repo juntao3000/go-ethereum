@@ -81,10 +81,10 @@ func (n *proofList) Delete(key []byte) error {
 // 是状态进出默克尔树的媒介。
 // 实际上 StateDB 充当状态（数据,Value）、Trie(树)、LevelDB（存储）的协调者
 type StateDB struct {
-	db           Database // 操作状态的底层数据库，在实例化 StateDB 时指定
-	prefetcher   *triePrefetcher
-	originalRoot common.Hash // The pre-state root, before any changes were made
-	trie         Trie        // 世界状态所在的树实例对象，现在只有以太坊改进的默克人前缀压缩树
+	db           Database        // 操作状态的底层数据库，在实例化 StateDB 时指定, state.cachingDB 用 lru.Cache,fastcache 包装了一层
+	prefetcher   *triePrefetcher // 预缓存器
+	originalRoot common.Hash     // The pre-state root, before any changes were made
+	trie         Trie            // 世界状态所在的树实例对象，现在只有以太坊改进的默克人前缀压缩树
 	hasher       crypto.KeccakState
 
 	snaps         *snapshot.Tree

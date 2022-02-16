@@ -195,10 +195,12 @@ func (p *triePrefetcher) used(root common.Hash, used [][]byte) {
 // single trie. It is spawned when a new root is encountered and lives until the
 // main prefetcher is paused and either all requested items are processed or if
 // the trie being worked on is retrieved from the prefetcher.
+//
+// 单个 trie 的预缓存器
 type subfetcher struct {
 	db   Database    // Database to load trie nodes through
 	root common.Hash // Root hash of the trie to prefetch
-	trie Trie        // Trie being populated with nodes
+	trie Trie        // Trie being populated with nodes // 尝试填充的 trie
 
 	tasks [][]byte   // Items queued up for retrieval
 	lock  sync.Mutex // Lock protecting the task queue
@@ -274,6 +276,8 @@ func (sf *subfetcher) abort() {
 
 // loop waits for new tasks to be scheduled and keeps loading them until it runs
 // out of tasks or its underlying trie is retrieved for committing.
+//
+// 预取属于特定根哈希的状态项
 func (sf *subfetcher) loop() {
 	// No matter how the loop stops, signal anyone waiting that it's terminated
 	defer close(sf.term)

@@ -37,6 +37,10 @@ import (
 // PrecompiledContract is the basic interface for native Go contracts. The implementation
 // requires a deterministic gas count based on the input size of the Run method of the
 // contract.
+//
+// 以太坊包含了一些用于密码学计算的预编译合约，可以用来实现高级隐私保护功能
+// https://blog.csdn.net/mutourend/article/details/119106517
+//
 type PrecompiledContract interface {
 	RequiredGas(input []byte) uint64  // RequiredPrice calculates the contract gas use
 	Run(input []byte) ([]byte, error) // Run runs the precompiled contract

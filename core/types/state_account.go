@@ -25,8 +25,10 @@ import (
 // StateAccount is the Ethereum consensus representation of accounts.
 // These objects are stored in the main account trie.
 type StateAccount struct {
-	Nonce    uint64
-	Balance  *big.Int
+	Nonce   uint64
+	Balance *big.Int
+
+	// Root,CodeHash 两项只有合约帐户才有
 	Root     common.Hash // merkle root of the storage trie
 	CodeHash []byte
 }

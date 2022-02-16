@@ -172,6 +172,8 @@ func (ch suicideChange) dirtied() *common.Address {
 	return ch.account
 }
 
+// ripemd160hash 预编译合约的固定地址
+// 预编译合约定义在 core/vm/contracts.go
 var ripemd = common.HexToAddress("0000000000000000000000000000000000000003")
 
 func (ch touchChange) revert(s *StateDB) {

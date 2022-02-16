@@ -108,6 +108,7 @@ func (ethash *Ethash) Seal(chain consensus.ChainHeaderReader, block *types.Block
 			close(abort)
 		case result = <-locals:
 			// One of the threads found a block, abort all others
+			// 其中一个线程挖到正确块，中止其他所有线程
 			select {
 			case results <- result:
 			default:

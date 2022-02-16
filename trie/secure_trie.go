@@ -38,9 +38,13 @@ import (
 //
 // 为了解决路径深度攻击而将数据进入 MPT 前进行一次安全清洗，使用 Keccak256(key) 得到的key 的哈希值替换原数据 key
 type SecureTrie struct {
-	trie             Trie
-	hashKeyBuf       [common.HashLength]byte
-	secKeyCache      map[string][]byte
+	trie       Trie
+	hashKeyBuf [common.HashLength]byte
+
+	// map key = Hex Encoding key
+	// map value = KEYBYTES
+	secKeyCache map[string][]byte
+
 	secKeyCacheOwner *SecureTrie // Pointer to self, replace the key cache on mismatch
 }
 
@@ -200,6 +204,9 @@ func (t *SecureTrie) NodeIterator(start []byte) NodeIterator {
 // hashKey returns the hash of key as an ephemeral buffer.
 // The caller must not hold onto the return value because it will become
 // invalid on the next call to hashKey or secKey.
+//
+// 为了解决路径深度攻击而将数据进入 MPT 前进行一次安全清洗，使用 Keccak256(key) 得到的key 的哈希值替换原数据 key
+// 将任意长度的key转换为32位长度
 func (t *SecureTrie) hashKey(key []byte) []byte {
 	h := newHasher(false)
 	h.sha.Reset()

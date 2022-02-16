@@ -921,6 +921,7 @@ func (srv *Server) checkInboundConn(remoteIP net.IP) error {
 func (srv *Server) SetupConn(fd net.Conn, flags connFlag, dialDest *enode.Node) error {
 	c := &conn{fd: fd, flags: flags, cont: make(chan error)}
 	if dialDest == nil {
+		// rlpxTransport
 		c.transport = srv.newTransport(fd, nil)
 	} else {
 		c.transport = srv.newTransport(fd, dialDest.Pubkey())

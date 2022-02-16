@@ -74,8 +74,8 @@ type Database struct {
 	oldest  common.Hash                 // Oldest tracked node, flush-list head
 	newest  common.Hash                 // Newest tracked node, flush-list tail
 
-	// preimages提供了从哈希到原字节串的映射，我们前面提到的安全MPT树就需要借助这个字段（安全MPT树的键是原字节串经过哈希得到的结果），
-	// 借助这个字段我们就可以从哈希值恢复原字节串，安全的MPT树具体实现位于文件secure_trie.go中，其主要的实现都是对原生的Trie树进行封装
+	// preimages提供了从Hex encoding key到 Key bytes key 的映射，我们前面提到的安全MPT树就需要借助这个字段（安全MPT树的键是原字节串经过哈希得到的结果），
+	// 借助这个字段我们就可以从哈希key恢复原字节串，安全的MPT树具体实现位于文件secure_trie.go中，其主要的实现都是对原生的Trie树进行封装
 	preimages map[common.Hash][]byte // Preimages of nodes from the secure trie
 
 	gctime  time.Duration      // Time spent on garbage collection since last commit

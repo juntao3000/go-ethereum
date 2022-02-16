@@ -48,7 +48,7 @@ import (
 // This type is not generally safe for concurrent use, but reading and writing of messages
 // may happen concurrently after the handshake.
 type Conn struct {
-	dialDest *ecdsa.PublicKey
+	dialDest *ecdsa.PublicKey // 目标连接对等节点的公钥,自己作为发起方
 	conn     net.Conn
 	session  *sessionState
 

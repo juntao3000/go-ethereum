@@ -337,11 +337,14 @@ func generateDataset(dest []uint32, epoch uint64, cache []uint32) {
 // value for a particular header hash and nonce.
 func hashimoto(hash []byte, nonce uint64, size uint64, lookup func(index uint32) []uint32) ([]byte, []byte) {
 	// Calculate the number of theoretical rows (we use one buffer nonetheless)
+	// 计算数据集的行数
 	rows := uint32(size / mixBytes)
 
 	// Combine header+nonce into a 64 byte seed
+	// 合并header+nonce到一个 40 字节的seed
 	seed := make([]byte, 40)
 	copy(seed, hash)
+	// 将nonce值填入seed的后（40-32=8）字节中去，（nonce本身就是uint64类型，是 64 位，对应 8 字节大小），正好把hash和nonce完整的填满了 40 字节的 seed
 	binary.LittleEndian.PutUint64(seed[32:], nonce)
 
 	seed = crypto.Keccak512(seed)
@@ -396,7 +399,9 @@ func hashimotoLight(size uint64, cache []uint32, hash []byte, nonce uint64) ([]b
 // hashimotoFull aggregates data from the full dataset (using the full in-memory
 // dataset) in order to produce our final value for a particular header hash and
 // nonce.
+// 将原始数据集进行了读取分割，然后传给hashimoto函数
 func hashimotoFull(dataset []uint32, hash []byte, nonce uint64) ([]byte, []byte) {
+	//定义一个lookup函数，用于在数据集中查找数据
 	lookup := func(index uint32) []uint32 {
 		offset := index * hashWords
 		return dataset[offset : offset+hashWords]

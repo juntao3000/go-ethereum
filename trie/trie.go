@@ -93,7 +93,6 @@ func New(root common.Hash, db *Database) (*Trie, error) {
 	}
 	if root != (common.Hash{}) && root != emptyRoot {
 		// 如果hash值不是空值的化，就说明是从数据库加载一个已经存在的Trie树， 就调用trei.resolveHash方法来加载整颗Trie树
-
 		rootnode, err := trie.resolveHash(root[:], nil)
 		if err != nil {
 			return nil, err
@@ -123,6 +122,7 @@ func (t *Trie) Get(key []byte) []byte {
 // The value bytes must not be modified by the caller.
 // If a node was not found in the database, a MissingNodeError is returned.
 func (t *Trie) TryGet(key []byte) ([]byte, error) {
+	// key 从 32 位的 keccak256 转换为 Hex encoding 的半字节编码
 	value, newroot, didResolve, err := t.tryGet(t.root, keybytesToHex(key), 0)
 	if err == nil && didResolve {
 		t.root = newroot
@@ -380,7 +380,7 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		if !dirty || err != nil {
 			return false, n, err
 		}
-		n = n.copy()
+		n = n.copy() //TODO:为会么要 copy ?
 		n.flags = t.newFlag()
 		n.Children[key[0]] = nn
 		return true, n, nil
@@ -534,6 +534,7 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 		// n still contains at least two values and cannot be reduced.
 		return true, n, nil
 
+		// 叶子节点
 	case valueNode:
 		return true, nil, nil
 
@@ -541,7 +542,7 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 		return false, nil, nil
 
 	// 如果当前节点是hashNode, hashNode的意思是当前节点还没有加载到内存里面来，还是存放在数据库里面，
-	// 那么首先调用 t.resolveHash(n, prefix)来加载到内存,原成一颗子树
+	// 那么首先调用 t.resolveHash(n, prefix)来加载到内存,还原成一颗子树
 	case hashNode:
 		// We've hit a part of the trie that isn't loaded yet. Load
 		// the node and delete from it. This leaves all child nodes on

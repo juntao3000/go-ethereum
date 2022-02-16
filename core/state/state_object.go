@@ -69,7 +69,7 @@ type stateObject struct {
 	address  common.Address     // 对应的账户地址
 	addrHash common.Hash        // hash of ethereum address of the account // 账户地址的哈希值
 	data     types.StateAccount // 这个是实际的以太坊账号的信息
-	db       *StateDB           //底层数据库
+	db       *StateDB           //关联的世界状态对象?
 
 	// DB error.
 	// State objects are used by the consensus core and VM which are
@@ -143,6 +143,8 @@ func (s *stateObject) touch() {
 	s.db.journal.append(touchChange{
 		account: &s.address,
 	})
+
+	// ripemd160hash 预编译合约的特殊处理
 	if s.address == ripemd {
 		// Explicitly put it in the dirty-cache, which is otherwise generated from
 		// flattened journals.
